@@ -233,31 +233,33 @@ void InfypowerCANController::setup_can_bcm() {
     // we actually only register Rx for Read Power Module Status here since we have to
     // periodically report voltage and current to EVerest
     struct {
-        struct bcm_msg_head bcm_msg_head;
-        struct can_frame can_frame[2];
+        uint32_t opcode;
+        uint32_t flags;
+        uint32_t count;
+        struct bcm_timeval ival1, ival2;
+        canid_t can_id;
+        uint32_t nframes;
+        struct can_frame frames[2];
     } __attribute__((packed)) bcm_rx_setup = {
-        .bcm_msg_head =
+        .opcode = RX_SETUP,
+        .flags = SETTIMER | RX_ANNOUNCE_RESUME,
+        .count = 0,
+        .ival1 =
             {
-                .opcode = RX_SETUP,
-                .flags = SETTIMER | RX_ANNOUNCE_RESUME,
-                .count = 0,
-                .ival1 =
-                    {
-                        .tv_sec = 0,
-                        .tv_usec = 385000, // expect frames in intervals of 375 ms plus 10 ms safety margin
-                    },
-                .ival2 =
-                    {
-                        .tv_sec = 0,
-                        .tv_usec = 250000, // limit updates to once every 250ms (see EVerest's recommendation)
-                    },
-                .can_id = can_id_rx,
-                .nframes = 2,
+                .tv_sec = 0,
+                .tv_usec = 385000, // expect frames in intervals of 375 ms plus 10 ms safety margin
             },
-        .can_frame =
+        .ival2 =
+            {
+                .tv_sec = 0,
+                .tv_usec = 250000, // limit updates to once every 250ms (see EVerest's recommendation)
+            },
+        .can_id = can_id_rx.can_id,
+        .nframes = 2,
+        .frames =
             {
                 {
-                    .can_id = can_id_rx,
+                    .can_id = can_id_rx.can_id,
                     .len = 8,
                     .__pad = 0,
                     .__res0 = 0,
@@ -265,7 +267,7 @@ void InfypowerCANController::setup_can_bcm() {
                     .data = {0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // MUX mask
                 },
                 {
-                    .can_id = can_id_rx,
+                    .can_id = can_id_rx.can_id,
                     .len = 8,
                     .__pad = 0,
                     .__res0 = 0,
@@ -280,22 +282,27 @@ void InfypowerCANController::setup_can_bcm() {
                           "Couldn't register response frames with BCM");
 
     struct {
-        struct bcm_msg_head bcm_msg_head;
-        struct can_frame can_frame[3];
+        uint32_t opcode;
+        uint32_t flags;
+        uint32_t count;
+        struct bcm_timeval ival1, ival2;
+        canid_t can_id;
+        uint32_t nframes;
+        struct can_frame frames[3];
     } __attribute__((packed)) bcm_tx_setup;
 
     memset(&bcm_tx_setup, 0, sizeof(bcm_tx_setup));
 
-    bcm_tx_setup.bcm_msg_head.opcode = TX_SETUP;
-    bcm_tx_setup.bcm_msg_head.flags = SETTIMER | STARTTIMER | TX_CP_CAN_ID;
+    bcm_tx_setup.opcode = TX_SETUP;
+    bcm_tx_setup.flags = SETTIMER | STARTTIMER | TX_CP_CAN_ID;
     // send at intervals of 125 ms alternating 3 frames -> effective cycle is 375ms,
     // 250ms for voltage and current as recommended by EVerest
-    bcm_tx_setup.bcm_msg_head.ival2.tv_usec = 125000;
-    bcm_tx_setup.bcm_msg_head.can_id = cmd.get_tx_can_id();
-    bcm_tx_setup.bcm_msg_head.nframes = this->can_bcm_cmds.size();
+    bcm_tx_setup.ival2.tv_usec = 125000;
+    bcm_tx_setup.can_id = cmd.get_tx_can_id().can_id;
+    bcm_tx_setup.nframes = this->can_bcm_cmds.size();
 
     for (unsigned int idx = 0; idx < this->can_bcm_cmds.size(); ++idx)
-        memcpy(&bcm_tx_setup.can_frame[idx], this->can_bcm_cmds[idx]->get_tx_frame(), sizeof(struct can_frame));
+        memcpy(&bcm_tx_setup.frames[idx], this->can_bcm_cmds[idx]->get_tx_frame(), sizeof(struct can_frame));
 
     // push the setup request to CAN BCM
     this->push_to_can_bcm((const char*)&bcm_tx_setup, sizeof(bcm_tx_setup),
@@ -572,8 +579,13 @@ bool InfypowerCANController::process_cmd(InfypowerCANCmd& cmd) {
 
 void InfypowerCANController::can_bcm_rx_worker() {
     struct {
-        struct bcm_msg_head bcm_msg_head;
-        struct can_frame can_frame;
+        uint32_t opcode;
+        uint32_t flags;
+        uint32_t count;
+        struct bcm_timeval ival1, ival2;
+        canid_t can_id;
+        uint32_t nframes;
+        struct can_frame frames;
     } __attribute__((packed)) bcm_frame;
     bool timeout_reported {false};
 
@@ -589,14 +601,14 @@ void InfypowerCANController::can_bcm_rx_worker() {
         if (rv == 0)
             continue; // this should usually not happen
         // we should receive either a header plus frame, or only the header in case of RX_TIMEOUT
-        if (rv != sizeof(bcm_frame.bcm_msg_head) && rv != sizeof(bcm_frame))
+        if (rv != 56 && rv != sizeof(bcm_frame))
             throw std::system_error(EBADMSG, std::generic_category(), "Short CAN BCM read");
 
-        switch (bcm_frame.bcm_msg_head.opcode) {
+        switch (bcm_frame.opcode) {
         case RX_CHANGED:
-            if (bcm_frame.bcm_msg_head.nframes != 1)
+            if (bcm_frame.nframes != 1)
                 continue; // this should usually not happen
-            if (bcm_frame.can_frame.len != 8)
+            if (bcm_frame.frames.len != 8)
                 continue; // this should usually also not happen
 
             // since we only registered RX for a single CAN ID we trust BCM and do not check this further,
@@ -608,25 +620,25 @@ void InfypowerCANController::can_bcm_rx_worker() {
                 timeout_reported = false;
             }
 
-            switch (bcm_frame.can_frame.data[0]) {
+            switch (bcm_frame.frames.data[0]) {
             case 0x11:
-                switch (bcm_frame.can_frame.data[1]) {
+                switch (bcm_frame.frames.data[1]) {
                 case 0x10:
-                    this->on_error(bcm_frame.can_frame.data[7] & (1 << 0), "VendorError", "Output Short Circuit",
+                    this->on_error(bcm_frame.frames.data[7] & (1 << 0), "VendorError", "Output Short Circuit",
                                    "Output Short Circuit");
-                    this->on_error(bcm_frame.can_frame.data[7] & (1 << 5), "VendorError", "Discharge Abnormal",
+                    this->on_error(bcm_frame.frames.data[7] & (1 << 5), "VendorError", "Discharge Abnormal",
                                    "Discharge Abnormal");
 
-                    this->on_error(bcm_frame.can_frame.data[6] & (1 << 1), "VendorError", "Fault Alarm", "Fault Alarm");
-                    this->on_error(bcm_frame.can_frame.data[6] & (1 << 2), "VendorError", "Protection Alarm",
+                    this->on_error(bcm_frame.frames.data[6] & (1 << 1), "VendorError", "Fault Alarm", "Fault Alarm");
+                    this->on_error(bcm_frame.frames.data[6] & (1 << 2), "VendorError", "Protection Alarm",
                                    "Protection Alarm");
-                    this->on_error(bcm_frame.can_frame.data[6] & (1 << 3), "VendorError", "Fan Fault Alarm",
+                    this->on_error(bcm_frame.frames.data[6] & (1 << 3), "VendorError", "Fan Fault Alarm",
                                    "Fan Fault Alarm");
-                    this->on_error(bcm_frame.can_frame.data[6] & (1 << 4), "OverTemperature", "", "OverTemperature");
-                    this->on_error(bcm_frame.can_frame.data[6] & (1 << 5), "OverVoltageDC", "", "OverVoltageDC");
+                    this->on_error(bcm_frame.frames.data[6] & (1 << 4), "OverTemperature", "", "OverTemperature");
+                    this->on_error(bcm_frame.frames.data[6] & (1 << 5), "OverVoltageDC", "", "OverVoltageDC");
 
-                    this->on_error(bcm_frame.can_frame.data[5] & (1 << 5), "UnderVoltageAC", "", "UnderVoltageAC");
-                    this->on_error(bcm_frame.can_frame.data[5] & (1 << 6), "OverVoltageAC", "", "OverVoltageAC");
+                    this->on_error(bcm_frame.frames.data[5] & (1 << 5), "UnderVoltageAC", "", "UnderVoltageAC");
+                    this->on_error(bcm_frame.frames.data[5] & (1 << 6), "OverVoltageAC", "", "OverVoltageAC");
                     break;
                 }
                 break;
@@ -636,7 +648,7 @@ void InfypowerCANController::can_bcm_rx_worker() {
 
         case RX_TIMEOUT:
             if (!timeout_reported) {
-                std::string errmsg = InfypowerCANID(bcm_frame.bcm_msg_head.can_id);
+                std::string errmsg = InfypowerCANID(bcm_frame.can_id);
                 this->on_error(true, "CommunicationFault", "BCM RX_TIMEOUT", errmsg);
                 timeout_reported = true;
             }
@@ -644,7 +656,7 @@ void InfypowerCANController::can_bcm_rx_worker() {
 
         default:
             throw std::system_error(EINVAL, std::generic_category(),
-                                    "Unexpected BCM opcode received: " + std::to_string(bcm_frame.bcm_msg_head.opcode));
+                                    "Unexpected BCM opcode received: " + std::to_string(bcm_frame.opcode));
         }
     }
 
