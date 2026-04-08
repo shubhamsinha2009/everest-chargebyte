@@ -226,90 +226,63 @@ void InfypowerCANController::setup_can_bcm() {
     for (auto it = this->can_bcm_cmds.begin(); it != this->can_bcm_cmds.end(); ++it)
         this->register_expected_cmd(**it);
 
-    // the CAN ID is the same for all commands here, so we just use this below
     const InfypowerCANCmd& cmd = *this->can_bcm_cmds[0];
-
-    // we cannot use the InfypowerRxCANID provided by InfypowerCANCmd because it has narrowed mask,
-    // so we have to create it for our use-case here: just swapped but complete
     const InfypowerRxCANID can_id_rx(cmd.get_tx_can_id());
 
-    // we actually only register Rx for Read Power Module Status here since we have to
-    // periodically report voltage and current to EVerest
-    struct {
-        uint32_t opcode;
-        uint32_t flags;
-        uint32_t count;
-        struct bcm_timeval ival1, ival2;
-        canid_t can_id;
-        uint32_t nframes;
-        struct can_frame frames[2];
-    } __attribute__((packed)) bcm_rx_setup = {
-        .opcode = RX_SETUP,
-        .flags = SETTIMER | RX_ANNOUNCE_RESUME,
-        .count = 0,
-        .ival1 =
-            {
-                .tv_sec = 0,
-                .tv_usec = 385000, // expect frames in intervals of 375 ms plus 10 ms safety margin
-            },
-        .ival2 =
-            {
-                .tv_sec = 0,
-                .tv_usec = 250000, // limit updates to once every 250ms (see EVerest's recommendation)
-            },
-        .can_id = can_id_rx.can_id,
-        .nframes = 2,
-        .frames =
-            {
-                {
-                    .can_id = can_id_rx.can_id,
-                    .len = 8,
-                    .__pad = 0,
-                    .__res0 = 0,
-                    .len8_dlc = 0,
-                    .data = {0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // MUX mask
-                },
-                {
-                    .can_id = can_id_rx.can_id,
-                    .len = 8,
-                    .__pad = 0,
-                    .__res0 = 0,
-                    .len8_dlc = 0,
-                    .data = {0x11, 0x10, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff}, // mask for power module status
-                },
-            },
-    };
+    // RX SETUP: periodically report voltage and current to EVerest
+    std::vector<uint8_t> rx_buf(sizeof(struct bcm_msg_head) + 2 * sizeof(struct can_frame));
+    struct bcm_msg_head* rx_head = reinterpret_cast<struct bcm_msg_head*>(rx_buf.data());
+    struct can_frame* rx_frames = reinterpret_cast<struct can_frame*>(rx_buf.data() + sizeof(struct bcm_msg_head));
 
-    // push the setup request to CAN BCM
-    this->push_to_can_bcm((const char*)&bcm_rx_setup, sizeof(bcm_rx_setup),
-                          "Couldn't register response frames with BCM");
+    rx_head->opcode = RX_SETUP;
+    rx_head->flags = SETTIMER | RX_ANNOUNCE_RESUME;
+    rx_head->count = 0;
+    rx_head->ival1.tv_sec = 0;
+    rx_head->ival1.tv_usec = 385000; // expect frames in intervals of 375 ms plus 10 ms safety margin
+    rx_head->ival2.tv_sec = 0;
+    rx_head->ival2.tv_usec = 250000; // limit updates to once every 250ms
+    rx_head->can_id = can_id_rx.can_id;
+    rx_head->nframes = 2;
 
-    struct {
-        uint32_t opcode;
-        uint32_t flags;
-        uint32_t count;
-        struct bcm_timeval ival1, ival2;
-        canid_t can_id;
-        uint32_t nframes;
-        struct can_frame frames[3];
-    } __attribute__((packed)) bcm_tx_setup;
+    // Frame 0: MUX mask
+    rx_frames[0].can_id = can_id_rx.can_id;
+    rx_frames[0].len = 8;
+    std::fill(rx_frames[0].data, rx_frames[0].data + 8, 0);
+    rx_frames[0].data[0] = 0xff;
+    rx_frames[0].data[1] = 0xff;
 
-    memset(&bcm_tx_setup, 0, sizeof(bcm_tx_setup));
+    // Frame 1: mask for power module status
+    rx_frames[1].can_id = can_id_rx.can_id;
+    rx_frames[1].len = 8;
+    rx_frames[1].data[0] = 0x11;
+    rx_frames[1].data[1] = 0x10;
+    rx_frames[1].data[5] = 0xff;
+    rx_frames[1].data[6] = 0xff;
+    rx_frames[1].data[7] = 0xff;
 
-    bcm_tx_setup.opcode = TX_SETUP;
-    bcm_tx_setup.flags = SETTIMER | STARTTIMER | TX_CP_CAN_ID;
-    // send at intervals of 125 ms alternating 3 frames -> effective cycle is 375ms,
-    // 250ms for voltage and current as recommended by EVerest
-    bcm_tx_setup.ival2.tv_usec = 125000;
-    bcm_tx_setup.can_id = cmd.get_tx_can_id().can_id;
-    bcm_tx_setup.nframes = this->can_bcm_cmds.size();
+    this->push_to_can_bcm((const char*)rx_buf.data(), rx_buf.size(), "Couldn't register response frames with BCM");
 
-    for (unsigned int idx = 0; idx < this->can_bcm_cmds.size(); ++idx)
-        memcpy(&bcm_tx_setup.frames[idx], this->can_bcm_cmds[idx]->get_tx_frame(), sizeof(struct can_frame));
+    // TX SETUP: periodic requests to PSU
+    uint32_t nframes_tx = this->can_bcm_cmds.size();
+    std::vector<uint8_t> tx_buf(sizeof(struct bcm_msg_head) + nframes_tx * sizeof(struct can_frame));
+    struct bcm_msg_head* tx_head = reinterpret_cast<struct bcm_msg_head*>(tx_buf.data());
+    struct can_frame* tx_frames = reinterpret_cast<struct can_frame*>(tx_buf.data() + sizeof(struct bcm_msg_head));
 
-    // push the setup request to CAN BCM
-    this->push_to_can_bcm((const char*)&bcm_tx_setup, sizeof(bcm_tx_setup),
-                          "Couldn't register request frames with BCM");
+    tx_head->opcode = TX_SETUP;
+    tx_head->flags = SETTIMER | STARTTIMER | TX_CP_CAN_ID;
+    tx_head->count = 0;
+    tx_head->ival1.tv_sec = 0;
+    tx_head->ival1.tv_usec = 0;
+    tx_head->ival2.tv_sec = 0;
+    tx_head->ival2.tv_usec = 125000; // 125ms alternating -> 375ms cycle
+    tx_head->can_id = cmd.get_tx_can_id().can_id;
+    tx_head->nframes = nframes_tx;
+
+    for (unsigned int idx = 0; idx < nframes_tx; ++idx) {
+        memcpy(&tx_frames[idx], this->can_bcm_cmds[idx]->get_tx_frame(), sizeof(struct can_frame));
+    }
+
+    this->push_to_can_bcm((const char*)tx_buf.data(), tx_buf.size(), "Couldn't register request frames with BCM");
 
 #pragma GCC diagnostic pop
 }
