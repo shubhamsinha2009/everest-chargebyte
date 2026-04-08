@@ -67,6 +67,13 @@ config:
       EvseManager is used. This is also the default behavior.
     type: number
     default: -1
+  bidirectional:
+    description: >-
+      Explicitly enable or disable bidirectional support (BPT/discharging).
+      If set to true, the module will check if the hardware (dc_module_type)
+      supports it. If set to false, it will be disabled regardless of hardware.
+    type: boolean
+    default: true
 provides:
   main:
     interface: power_supply_DC

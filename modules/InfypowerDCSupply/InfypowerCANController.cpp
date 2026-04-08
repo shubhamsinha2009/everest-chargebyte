@@ -77,7 +77,8 @@ InfypowerCANController::~InfypowerCANController() {
 }
 
 void InfypowerCANController::init(const std::string& device, unsigned int bitrate, unsigned int can_source_address,
-                                  unsigned int can_destination_address, const std::string& dc_module_type) {
+                                  unsigned int can_destination_address, const std::string& dc_module_type,
+                                  bool bidirectional) {
     struct can_bittiming bt;
     struct sockaddr_can addr;
     struct ifreq ifr;
@@ -89,10 +90,12 @@ void InfypowerCANController::init(const std::string& device, unsigned int bitrat
     this->can_dst_addr = can_destination_address;
     this->dc_module_type = dc_module_type;
 
-    // check and remember whether the DC power module is a bidirectional one (based on user configuration input)
+    // check and remember whether the DC power module is a bidirectional one
     auto it = std::find(this->bidi_dc_module_types.begin(), this->bidi_dc_module_types.end(), dc_module_type);
-    this->caps.bidirectional = it != this->bidi_dc_module_types.end();
-    EVLOG_info << "Bidirectional capability: " << std::boolalpha << this->caps.bidirectional;
+    const bool hardware_supports_bidi = it != this->bidi_dc_module_types.end();
+    this->caps.bidirectional = hardware_supports_bidi && bidirectional;
+    EVLOG_info << "Bidirectional capability: " << std::boolalpha << this->caps.bidirectional << " (hardware: "
+               << hardware_supports_bidi << ", config: " << bidirectional << ")";
 
     // get current interface configuration and state
     if (can_get_state(device.c_str(), &state))

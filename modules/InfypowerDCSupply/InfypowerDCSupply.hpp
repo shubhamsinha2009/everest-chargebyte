@@ -31,6 +31,7 @@ struct Conf {
     double override_max_current;
     double override_max_power;
     double override_cutoff_voltage;
+    bool bidirectional;
 };
 
 class InfypowerDCSupply : public Everest::ModuleBase {

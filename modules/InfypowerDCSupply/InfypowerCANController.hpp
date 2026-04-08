@@ -37,7 +37,7 @@ public:
     /// @param can_destination_address The destination address to use in the CAN IDs.
     /// @param dc_module_type String containing the power module type as configured by user.
     void init(const std::string& device, unsigned int bitrate, unsigned int can_source_address,
-              unsigned int can_destination_address, const std::string& dc_module_type);
+              unsigned int can_destination_address, const std::string& dc_module_type, bool bidirectional);
 
     /// @brief Switch between import (DC to grid) vs. export (grid to DC) mode.
     /// @param enable_import True, when the energy should flow from DC to grid.
