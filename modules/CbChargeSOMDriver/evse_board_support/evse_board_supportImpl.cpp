@@ -417,8 +417,13 @@ void evse_board_supportImpl::handle_ac_switch_three_phases_while_charging(bool& 
 }
 
 void evse_board_supportImpl::handle_evse_replug(int& value) {
-    // your code for cmd evse_replug goes here
-    (void)value;
+    EVLOG_info << "Executing Remote Replug (" << value << "ms)...";
+    // Toggling duty cycle to simulate a disconnect/reconnect event
+    // 0: State F (Disconnect/Error)
+    // 1000: 100% duty cycle (State A)
+    this->mod->controller.set_duty_cycle(0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(value));
+    this->mod->controller.set_duty_cycle(1000);
 }
 
 types::board_support_common::ProximityPilot evse_board_supportImpl::handle_ac_read_pp_ampacity() {
