@@ -357,8 +357,7 @@ void evse_board_supportImpl::handle_pwm_off() {
         // generate state A
         unsigned int new_duty_cycle = 1000;
 
-        EVLOG_info << "handle_pwm_off: Setting new duty cycle of " << std::fixed << std::setprecision(1)
-                   << (new_duty_cycle / 10.0) << "%";
+        EVLOG_info << "handle_pwm_off: Setting new duty cycle of 100.0% (Simulating State A/Stop)";
         this->mod->controller.set_duty_cycle(new_duty_cycle);
     } catch (std::exception& e) {
         EVLOG_error << e.what();
@@ -398,7 +397,8 @@ void evse_board_supportImpl::handle_allow_power_on(types::evse_board_support::Po
         return;
     }
 
-    EVLOG_info << "handle_allow_power_on: request to " << (value.allow_power_on ? "CLOSE" : "OPEN") << " the contactor";
+    EVLOG_info << "handle_allow_power_on: request to " << (value.allow_power_on ? "CLOSE (Start)" : "OPEN (Stop)")
+               << " the contactor";
 
     if (!state_change) {
         EVLOG_debug << "Current (unchanged) state: "
@@ -417,13 +417,24 @@ void evse_board_supportImpl::handle_ac_switch_three_phases_while_charging(bool& 
 }
 
 void evse_board_supportImpl::handle_evse_replug(int& value) {
-    EVLOG_info << "Executing Remote Replug (" << value << "ms)...";
-    // Toggling duty cycle to simulate a disconnect/reconnect event
+    EVLOG_info << "BSP: Executing Remote Replug (" << value << "ms)...";
+
+    // 1. Notify EVerest to enter Replug state
+    types::board_support_common::BspEvent event_started;
+    event_started.event = types::board_support_common::Event::EvseReplugStarted;
+    this->publish_event(event_started);
+
+    // 2. Toggling duty cycle to simulate a disconnect/reconnect event
     // 0: State F (Disconnect/Error)
     // 1000: 100% duty cycle (State A)
     this->mod->controller.set_duty_cycle(0);
     std::this_thread::sleep_for(std::chrono::milliseconds(value));
     this->mod->controller.set_duty_cycle(1000);
+
+    // 3. Notify EVerest to resume into WaitingForAuthentication
+    types::board_support_common::BspEvent event_finished;
+    event_finished.event = types::board_support_common::Event::EvseReplugFinished;
+    this->publish_event(event_finished);
 }
 
 types::board_support_common::ProximityPilot evse_board_supportImpl::handle_ac_read_pp_ampacity() {
