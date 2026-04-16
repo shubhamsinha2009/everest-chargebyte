@@ -424,17 +424,21 @@ void evse_board_supportImpl::handle_evse_replug(int& value) {
     event_started.event = types::board_support_common::Event::EvseReplugStarted;
     this->publish_event(event_started);
 
-    // 2. Toggling duty cycle to simulate a disconnect/reconnect event
-    // 0: State F (Disconnect/Error)
-    // 1000: 100% duty cycle (State A)
-    this->mod->controller.set_duty_cycle(0);
-    std::this_thread::sleep_for(std::chrono::milliseconds(value));
-    this->mod->controller.set_duty_cycle(1000);
+    // 2. Toggling duty cycle and finishing in a separate thread to avoid blocking the main message loop
+    std::thread([this, value]() {
+        // 0: State F (Disconnect/Error)
+        this->mod->controller.set_duty_cycle(0);
 
-    // 3. Notify EVerest to resume into WaitingForAuthentication
-    types::board_support_common::BspEvent event_finished;
-    event_finished.event = types::board_support_common::Event::EvseReplugFinished;
-    this->publish_event(event_finished);
+        std::this_thread::sleep_for(std::chrono::milliseconds(value));
+
+        // 1000: 100% duty cycle (State A)
+        this->mod->controller.set_duty_cycle(1000);
+
+        // 3. Notify EVerest to resume into WaitingForAuthentication
+        types::board_support_common::BspEvent event_finished;
+        event_finished.event = types::board_support_common::Event::EvseReplugFinished;
+        this->publish_event(event_finished);
+    }).detach();
 }
 
 types::board_support_common::ProximityPilot evse_board_supportImpl::handle_ac_read_pp_ampacity() {
