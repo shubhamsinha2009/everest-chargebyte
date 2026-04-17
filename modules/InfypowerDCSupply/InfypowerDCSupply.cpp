@@ -10,7 +10,8 @@ void InfypowerDCSupply::init() {
 
     try {
         this->controller.init(this->config.device, this->config.bitrate, this->config.can_source_address,
-                              this->config.can_destination_address, this->config.dc_module_type);
+                              this->config.can_destination_address, this->config.dc_module_type,
+                              this->config.bidirectional);
     } catch (std::system_error& e) {
         EVLOG_error << e.what();
         return;
