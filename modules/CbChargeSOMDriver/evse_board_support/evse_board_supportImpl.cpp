@@ -4,6 +4,7 @@
 #include <chrono>
 #include <iomanip>
 #include <stdexcept>
+#include <thread>
 #include <generated/types/cb_board_support.hpp>
 #include <CPUtils.hpp>
 #include "evse_board_supportImpl.hpp"
@@ -417,8 +418,35 @@ void evse_board_supportImpl::handle_ac_switch_three_phases_while_charging(bool& 
 }
 
 void evse_board_supportImpl::handle_evse_replug(int& value) {
-    // your code for cmd evse_replug goes here
-    (void)value;
+    EVLOG_info << "BSP: Executing Hardware Replug (" << value << "ms)...";
+
+    // 1. Force hard reset (forces CP line to State E / 0V)
+    this->mod->controller.disable();
+
+    // Manually publish State E so EVerest registers the "unplug"
+    this->publish_event({types::board_support_common::Event::E});
+
+    // Reset remembered state under lock
+    {
+        std::scoped_lock lock(this->cp_mutex);
+        this->cp_current_state = types::cb_board_support::CPState::E;
+    }
+
+    // 2. Wait to ensure EV registers the disconnection (typically > 200ms, user provides `value`)
+    std::this_thread::sleep_for(std::chrono::milliseconds(value));
+
+    // 3. Re-enable communications
+    this->mod->controller.enable();
+
+    // 4. Force state A (+12V) so it cleanly transitions to B if connected
+    unsigned int new_duty_cycle = 1000;
+    EVLOG_info << "handle_evse_replug: Setting new duty cycle of " << std::fixed << std::setprecision(1)
+               << (new_duty_cycle / 10.0) << "% (Simulating State A)";
+    this->mod->controller.set_duty_cycle(new_duty_cycle);
+
+    // Manually publish State A. When the car pulls it back to B, the on_cp_change 
+    // callback will naturally publish State B, completing the cycle.
+    this->publish_event({types::board_support_common::Event::A});
 }
 
 types::board_support_common::ProximityPilot evse_board_supportImpl::handle_ac_read_pp_ampacity() {
