@@ -219,8 +219,8 @@ void InfypowerCANController::setup_can_bcm() {
         this->received_current = static_cast<int32_t>(extract_uint32(&can_frame->data[4]));
 
         // now we have the current and use the cached voltage value
-        float v = std::abs(static_cast<float>(this->received_voltage) / 1000.0f);
-        float c = std::abs(static_cast<float>(this->received_current) / 1000.0f);
+        float v = static_cast<float>(this->received_voltage) / 1000.0f;
+        float c = static_cast<float>(this->received_current) / 1000.0f;
         this->on_vc_update(v, c);
     });
     this->can_bcm_cmds.push_back(std::move(cmd_c));
@@ -335,8 +335,8 @@ void InfypowerCANController::setup_can_bcm() {
             EVLOG_info << "--------------------------------------------------";
             EVLOG_info << " [Infy Full Telemetry Summary]";
             EVLOG_info << " > DC Output: " << std::fixed << std::setprecision(1)
-                       << std::abs(static_cast<float>(this->received_voltage) / 1000.0f) << "V | "
-                       << std::abs(static_cast<float>(this->received_current) / 1000.0f) << "A";
+                       << (static_cast<float>(this->received_voltage) / 1000.0f) << "V | "
+                       << (static_cast<float>(this->received_current) / 1000.0f) << "A";
             EVLOG_info << " > Phase V:   L1:" << this->ac_v_l1 << "V | L2:" << this->ac_v_l2 << "V | L3:" << this->ac_v_l3
                        << "V";
             EVLOG_info << " > Phase I:   L1:" << this->ac_i_l1 << "A | L2:" << this->ac_i_l2 << "A | L3:" << this->ac_i_l3
@@ -397,16 +397,13 @@ void InfypowerCANController::setup_can_bcm() {
     tx_head->ival1.tv_sec = 0;
     tx_head->ival1.tv_usec = 0;
 
-    // Calculate dynamic interval: we want to complete one full cycle of all commands
-    // within the configured telemetry_log_interval_s.
-    uint32_t interval_us = 125000; // Default 125ms
-    if (this->telemetry_log_interval_s > 0) {
-        uint64_t total_us = static_cast<uint64_t>(this->telemetry_log_interval_s) * 1000000ULL;
-        interval_us = static_cast<uint32_t>(total_us / nframes_tx);
-    }
+    // Use a fixed interval between polling frames (e.g. 100ms) to ensure
+    // that critical values like Voltage/Current are updated frequently enough.
+    // The telemetry_log_interval_s only controls how often we log the summary.
+    
 
-    tx_head->ival2.tv_sec = (interval_us / 1000000);
-    tx_head->ival2.tv_usec = (interval_us % 1000000);
+    tx_head->ival2.tv_sec = 0;
+    tx_head->ival2.tv_usec = 100000;
     tx_head->can_id = cmd.get_tx_can_id().can_id;
     tx_head->nframes = nframes_tx;
 
@@ -902,6 +899,8 @@ void InfypowerCANController::can_raw_rx_worker() {
 
                 // signal to invoke possible waiters
                 it->get().cv.notify_one();
+            } else {
+                EVLOG_debug << "Processed periodic CAN frame for " << it->get();
             }
         } else {
             EVLOG_debug << "No match for this CAN ID in pending CMDs (size: " << this->expected_cmds.size()
