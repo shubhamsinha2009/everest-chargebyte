@@ -1,5 +1,9 @@
 description: Hardware abstraction layer for chargebyte's Charge SOM
 config:
+  uart_max_retries:
+    description: The maximum number of consecutive UART timeouts before raising a fatal safety error.
+    type: integer
+    default: 3
   connector_type:
     description: Type of charging connector available at this EVSE
     type: string

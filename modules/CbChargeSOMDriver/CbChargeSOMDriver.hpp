@@ -39,6 +39,7 @@ struct Conf {
     std::string pt1000_2_identification;
     std::string pt1000_3_identification;
     std::string pt1000_4_identification;
+    int uart_max_retries;
 };
 
 class CbChargeSOMDriver : public Everest::ModuleBase {

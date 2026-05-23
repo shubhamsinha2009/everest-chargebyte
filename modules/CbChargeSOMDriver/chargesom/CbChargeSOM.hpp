@@ -49,7 +49,7 @@ public:
     /// @param serial_trace Enable debug traces in communication library if set to true.
     /// @param can_mirror_device Enables CAN mirror functionality if non-empty string is given.
     void init(const std::string& reset_gpio_line_name, bool reset_active_low, const std::string& serial_port,
-              bool is_pluggable, bool serial_trace, const std::string& can_mirror_device);
+              bool is_pluggable, bool serial_trace, const std::string& can_mirror_device, int uart_max_retries = 3);
 
     /// @brief Releases the reset of the safety controller and establish communication,
     ///        i.e. if not yet done, retrieve firmware version etc.
@@ -103,6 +103,9 @@ public:
     sigslot::signal<bool, unsigned int, const std::string&, unsigned int, const std::string&, unsigned int,
                     unsigned int>
         on_errmsg;
+
+    /// @brief Signal emitted when communication is lost (after retries exhausted)
+    sigslot::signal<const std::string&> on_communication_fault;
 
     /// @brief Return whether the safety controller detected an emergency state.
     bool is_emergency();
@@ -241,6 +244,9 @@ private:
 
     /// @brief Helper to signal thread termination wish
     std::atomic_bool termination_requested {false};
+
+    /// @brief Maximum number of consecutive UART timeouts before raising error
+    int uart_max_retries {3};
 
     /// @brief Helper to track the current MCU reset state
     ///        Background: using the GPIO line itself is heavy load due to call into kernel etc.
