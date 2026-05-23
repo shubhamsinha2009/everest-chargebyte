@@ -239,6 +239,7 @@ CbParsley::CbParsley() {
     this->rx_thread = std::thread([&]() {
         // used to detect changes
         uint64_t previous_charge_state = std::numeric_limits<uint64_t>::max();
+        int consecutive_timeouts = 0;
 
         EVLOG_debug << "RX Thread started";
 
@@ -280,10 +281,22 @@ CbParsley::CbParsley() {
                     // not handle this as an error, too
                     if (!this->rx_enabled)
                         continue;
+
+                    consecutive_timeouts++;
+                    if (consecutive_timeouts < this->uart_max_retries) {
+                        EVLOG_warning << "Safety controller UART timeout #" << consecutive_timeouts
+                                      << " - retrying...";
+                        continue;
+                    }
                     [[fallthrough]];
                 default:
-                    throw std::system_error(errno, std::generic_category(), "Failed to receive from safety controller");
+                    EVLOG_critical << "Fatal UART error or too many timeouts (errno=" << errno << "): " << strerror(errno);
+                    this->on_communication_fault("Failed to receive from safety controller after " +
+                                                 std::to_string(consecutive_timeouts) + " consecutive timeouts: " + strerror(errno));
+                    return;
                 }
+            } else {
+                consecutive_timeouts = 0;
             }
 
             // ignore all unknown COM values
@@ -412,11 +425,12 @@ void CbParsley::terminate() {
 }
 
 void CbParsley::init(const std::string& reset_gpio_line_name, bool reset_active_low, const std::string& serial_port,
-                     bool serial_trace) {
+                     bool serial_trace, int uart_max_retries) {
     int rv;
 
     // remember this setting
     this->serial_port = serial_port;
+    this->uart_max_retries = uart_max_retries;
 
     // acquire the safety controller reset line
     // in case this fails, e.g. gpio line name is wrong, this will raise an std::runtime_error
