@@ -78,7 +78,14 @@ InfypowerCANController::~InfypowerCANController() {
 
 void InfypowerCANController::init(const std::string& device, unsigned int bitrate, unsigned int can_source_address,
                                   unsigned int can_destination_address, const std::string& dc_module_type,
-                                  bool bidirectional) {
+                                  bool bidirectional, int telemetry_log_interval_s) {
+    this->device = device;
+    this->can_src_addr = static_cast<unsigned char>(can_source_address);
+    this->can_dst_addr = static_cast<unsigned char>(can_destination_address);
+    this->dc_module_type = dc_module_type;
+    this->telemetry_log_interval_s = telemetry_log_interval_s;
+    this->last_log_time = std::chrono::steady_clock::now();
+
     struct can_bittiming bt;
     struct sockaddr_can addr;
     struct ifreq ifr;
@@ -212,8 +219,8 @@ void InfypowerCANController::setup_can_bcm() {
         this->received_current = static_cast<int32_t>(extract_uint32(&can_frame->data[4]));
 
         // now we have the current and use the cached voltage value
-        float v = std::abs(static_cast<float>(this->received_voltage) / 1000.0f);
-        float c = std::abs(static_cast<float>(this->received_current) / 1000.0f);
+        float v = static_cast<float>(this->received_voltage) / 1000.0f;
+        float c = static_cast<float>(this->received_current) / 1000.0f;
         this->on_vc_update(v, c);
     });
     this->can_bcm_cmds.push_back(std::move(cmd_c));
@@ -222,9 +229,125 @@ void InfypowerCANController::setup_can_bcm() {
         "Read Power Module Status", InfypowerTxCANID(this->can_src_addr, this->can_dst_addr, cmd::read_info), 0x11,
         0x10, 0));
 
-    // register these commands in our expectation list
+    // --- AC PHASE VOLTAGES ---
+    auto cmd_ac_v1 = std::make_unique<InfypowerCANCmd>(
+        "AC L1 Voltage", InfypowerTxCANID(this->can_src_addr, this->can_dst_addr, cmd::read_info), 0x21, 0x01, 0);
+    cmd_ac_v1->on_received.connect(
+        [this](struct can_frame* f) { this->ac_v_l1 = static_cast<float>(extract_uint32(&f->data[4])) / 1000.0f; });
+    this->can_bcm_cmds.push_back(std::move(cmd_ac_v1));
+
+    auto cmd_ac_v2 = std::make_unique<InfypowerCANCmd>(
+        "AC L2 Voltage", InfypowerTxCANID(this->can_src_addr, this->can_dst_addr, cmd::read_info), 0x21, 0x02, 0);
+    cmd_ac_v2->on_received.connect(
+        [this](struct can_frame* f) { this->ac_v_l2 = static_cast<float>(extract_uint32(&f->data[4])) / 1000.0f; });
+    this->can_bcm_cmds.push_back(std::move(cmd_ac_v2));
+
+    auto cmd_ac_v3 = std::make_unique<InfypowerCANCmd>(
+        "AC L3 Voltage", InfypowerTxCANID(this->can_src_addr, this->can_dst_addr, cmd::read_info), 0x21, 0x03, 0);
+    cmd_ac_v3->on_received.connect(
+        [this](struct can_frame* f) { this->ac_v_l3 = static_cast<float>(extract_uint32(&f->data[4])) / 1000.0f; });
+    this->can_bcm_cmds.push_back(std::move(cmd_ac_v3));
+
+    // --- AC FREQUENCY & POWER ---
+    auto cmd_ac_f = std::make_unique<InfypowerCANCmd>(
+        "AC Frequency", InfypowerTxCANID(this->can_src_addr, this->can_dst_addr, cmd::read_info), 0x21, 0x07, 0);
+    cmd_ac_f->on_received.connect(
+        [this](struct can_frame* f) { this->ac_freq = static_cast<float>(extract_uint32(&f->data[4])) / 1000.0f; });
+    this->can_bcm_cmds.push_back(std::move(cmd_ac_f));
+
+    auto cmd_ac_p = std::make_unique<InfypowerCANCmd>(
+        "AC Active Power", InfypowerTxCANID(this->can_src_addr, this->can_dst_addr, cmd::read_info), 0x21, 0x08, 0);
+    cmd_ac_p->on_received.connect(
+        [this](struct can_frame* f) { this->ac_active_pwr = static_cast<float>(extract_uint32(&f->data[4])) / 1000.0f; });
+    this->can_bcm_cmds.push_back(std::move(cmd_ac_p));
+
+    // --- SYSTEM HEALTH (Line Voltages & Temp) ---
+    auto cmd_ac_ab = std::make_unique<InfypowerCANCmd>(
+        "AC AB Voltage", InfypowerTxCANID(this->can_src_addr, this->can_dst_addr, cmd::read_info), 0x11, 0x03, 0);
+    cmd_ac_ab->on_received.connect(
+        [this](struct can_frame* f) { this->ac_v_ab = static_cast<float>(extract_uint32(&f->data[4])) / 1000.0f; });
+    this->can_bcm_cmds.push_back(std::move(cmd_ac_ab));
+
+    auto cmd_temp = std::make_unique<InfypowerCANCmd>(
+        "Module Temp", InfypowerTxCANID(this->can_src_addr, this->can_dst_addr, cmd::read_info), 0x11, 0x06, 0);
+    cmd_temp->on_received.connect(
+        [this](struct can_frame* f) { this->ambient_temp = static_cast<float>(extract_uint32(&f->data[4])) / 1000.0f; });
+    this->can_bcm_cmds.push_back(std::move(cmd_temp));
+
+    // --- NEW: MISSING LINE VOLTAGES ---
+    auto cmd_ac_bc = std::make_unique<InfypowerCANCmd>(
+        "AC BC Voltage", InfypowerTxCANID(this->can_src_addr, this->can_dst_addr, cmd::read_info), 0x11, 0x04, 0);
+    cmd_ac_bc->on_received.connect(
+        [this](struct can_frame* f) { this->ac_v_bc = static_cast<float>(extract_uint32(&f->data[4])) / 1000.0f; });
+    this->can_bcm_cmds.push_back(std::move(cmd_ac_bc));
+
+    auto cmd_ac_ca = std::make_unique<InfypowerCANCmd>(
+        "AC CA Voltage", InfypowerTxCANID(this->can_src_addr, this->can_dst_addr, cmd::read_info), 0x11, 0x05, 0);
+    cmd_ac_ca->on_received.connect(
+        [this](struct can_frame* f) { this->ac_v_ca = static_cast<float>(extract_uint32(&f->data[4])) / 1000.0f; });
+    this->can_bcm_cmds.push_back(std::move(cmd_ac_ca));
+
+    // --- NEW: PHASE CURRENTS ---
+    auto cmd_ac_i1 = std::make_unique<InfypowerCANCmd>(
+        "AC L1 Current", InfypowerTxCANID(this->can_src_addr, this->can_dst_addr, cmd::read_info), 0x21, 0x04, 0);
+    cmd_ac_i1->on_received.connect(
+        [this](struct can_frame* f) { this->ac_i_l1 = static_cast<float>(extract_uint32(&f->data[4])) / 1000.0f; });
+    this->can_bcm_cmds.push_back(std::move(cmd_ac_i1));
+
+    auto cmd_ac_i2 = std::make_unique<InfypowerCANCmd>(
+        "AC L2 Current", InfypowerTxCANID(this->can_src_addr, this->can_dst_addr, cmd::read_info), 0x21, 0x05, 0);
+    cmd_ac_i2->on_received.connect(
+        [this](struct can_frame* f) { this->ac_i_l2 = static_cast<float>(extract_uint32(&f->data[4])) / 1000.0f; });
+    this->can_bcm_cmds.push_back(std::move(cmd_ac_i2));
+
+    auto cmd_ac_i3 = std::make_unique<InfypowerCANCmd>(
+        "AC L3 Current", InfypowerTxCANID(this->can_src_addr, this->can_dst_addr, cmd::read_info), 0x21, 0x06, 0);
+    cmd_ac_i3->on_received.connect(
+        [this](struct can_frame* f) { this->ac_i_l3 = static_cast<float>(extract_uint32(&f->data[4])) / 1000.0f; });
+    this->can_bcm_cmds.push_back(std::move(cmd_ac_i3));
+
+    // --- NEW: REACTIVE & APPARENT POWER ---
+    auto cmd_ac_rp = std::make_unique<InfypowerCANCmd>(
+        "AC Reactive Power", InfypowerTxCANID(this->can_src_addr, this->can_dst_addr, cmd::read_info), 0x21, 0x0C, 0);
+    cmd_ac_rp->on_received.connect(
+        [this](struct can_frame* f) { this->ac_reactive_pwr = static_cast<float>(extract_uint32(&f->data[4])) / 1000.0f; });
+    this->can_bcm_cmds.push_back(std::move(cmd_ac_rp));
+
+    auto cmd_ac_ap = std::make_unique<InfypowerCANCmd>(
+        "AC Apparent Power", InfypowerTxCANID(this->can_src_addr, this->can_dst_addr, cmd::read_info), 0x21, 0x10, 0);
+    cmd_ac_ap->on_received.connect(
+        [this](struct can_frame* f) { this->ac_apparent_pwr = static_cast<float>(extract_uint32(&f->data[4])) / 1000.0f; });
+    this->can_bcm_cmds.push_back(std::move(cmd_ac_ap));
+
+    // Register these commands in our expectation list
     for (auto it = this->can_bcm_cmds.begin(); it != this->can_bcm_cmds.end(); ++it)
         this->register_expected_cmd(**it);
+
+    // Periodically log everything (attach to DC current update)
+    this->can_bcm_cmds[1]->on_received.connect([this](struct can_frame* /* f */) {
+        if (this->telemetry_log_interval_s <= 0)
+            return;
+
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - this->last_log_time).count() >=
+            this->telemetry_log_interval_s) {
+            this->last_log_time = now;
+            EVLOG_info << "--------------------------------------------------";
+            EVLOG_info << " [Infy Full Telemetry Summary]";
+            EVLOG_info << " > DC Output: " << std::fixed << std::setprecision(1)
+                       << (static_cast<float>(this->received_voltage) / 1000.0f) << "V | "
+                       << (static_cast<float>(this->received_current) / 1000.0f) << "A";
+            EVLOG_info << " > Phase V:   L1:" << this->ac_v_l1 << "V | L2:" << this->ac_v_l2 << "V | L3:" << this->ac_v_l3
+                       << "V";
+            EVLOG_info << " > Phase I:   L1:" << this->ac_i_l1 << "A | L2:" << this->ac_i_l2 << "A | L3:" << this->ac_i_l3
+                       << "A";
+            EVLOG_info << " > Line V:    AB:" << this->ac_v_ab << "V | BC:" << this->ac_v_bc << "V | CA:" << this->ac_v_ca
+                       << "V";
+            EVLOG_info << " > Power:     Active: " << (int)this->ac_active_pwr << "W | Reactive: " << (int)this->ac_reactive_pwr << "VAR | Apparent: " << (int)this->ac_apparent_pwr << "VA";
+            EVLOG_info << " > Grid:      " << this->ac_freq << "Hz | Modules: " << this->pm_count << " | Temp: " << this->ambient_temp << "C";
+            EVLOG_info << "--------------------------------------------------";
+        }
+    });
 
     const InfypowerCANCmd& cmd = *this->can_bcm_cmds[0];
     const InfypowerRxCANID can_id_rx(cmd.get_tx_can_id());
@@ -273,8 +396,14 @@ void InfypowerCANController::setup_can_bcm() {
     tx_head->count = 0;
     tx_head->ival1.tv_sec = 0;
     tx_head->ival1.tv_usec = 0;
+
+    // Use a fixed interval between polling frames (e.g. 100ms) to ensure
+    // that critical values like Voltage/Current are updated frequently enough.
+    // The telemetry_log_interval_s only controls how often we log the summary.
+    
+
     tx_head->ival2.tv_sec = 0;
-    tx_head->ival2.tv_usec = 125000; // 125ms alternating -> 375ms cycle
+    tx_head->ival2.tv_usec = 100000;
     tx_head->can_id = cmd.get_tx_can_id().can_id;
     tx_head->nframes = nframes_tx;
 
@@ -770,6 +899,8 @@ void InfypowerCANController::can_raw_rx_worker() {
 
                 // signal to invoke possible waiters
                 it->get().cv.notify_one();
+            } else {
+                EVLOG_debug << "Processed periodic CAN frame for " << it->get();
             }
         } else {
             EVLOG_debug << "No match for this CAN ID in pending CMDs (size: " << this->expected_cmds.size()

@@ -194,6 +194,13 @@ void evse_board_supportImpl::init() {
             this->clear_error("evse_board_support/VendorWarning", module_str);
         }
     });
+
+    this->mod->controller.on_communication_fault.connect([&](const std::string& errmsg) {
+        EVLOG_error << "Safety Controller communication lost: " << errmsg << ". Raising CommunicationFault.";
+        Everest::error::Error error_object = this->error_factory->create_error(
+            "evse_board_support/CommunicationFault", "", errmsg, Everest::error::Severity::High);
+        this->raise_error(error_object);
+    });
 }
 
 void evse_board_supportImpl::ready() {

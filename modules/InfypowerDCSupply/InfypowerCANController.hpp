@@ -37,7 +37,8 @@ public:
     /// @param can_destination_address The destination address to use in the CAN IDs.
     /// @param dc_module_type String containing the power module type as configured by user.
     void init(const std::string& device, unsigned int bitrate, unsigned int can_source_address,
-              unsigned int can_destination_address, const std::string& dc_module_type, bool bidirectional);
+              unsigned int can_destination_address, const std::string& dc_module_type, bool bidirectional,
+              int telemetry_log_interval_s);
 
     /// @brief Switch between import (DC to grid) vs. export (grid to DC) mode.
     /// @param enable_import True, when the energy should flow from DC to grid.
@@ -96,6 +97,9 @@ private:
     /// @brief Remembers the user configured power module type
     std::string dc_module_type;
 
+    /// @brief Remembers the user configured telemetry log interval
+    int telemetry_log_interval_s {5};
+
     /// @brief Helper to signal thread termination wish
     std::atomic_bool termination_requested {false};
 
@@ -146,6 +150,15 @@ private:
 
     /// @brief Remember the last received current (in mA)
     int32_t received_current {0};
+
+    /// @brief Telemetry for AC side and system health
+    float ac_v_l1 {0}, ac_v_l2 {0}, ac_v_l3 {0};
+    float ac_i_l1 {0}, ac_i_l2 {0}, ac_i_l3 {0};
+    float ac_v_ab {0}, ac_v_bc {0}, ac_v_ca {0};
+    float ac_freq {0};
+    float ac_active_pwr {0}, ac_reactive_pwr {0}, ac_apparent_pwr {0};
+    float ambient_temp {0};
+    std::chrono::steady_clock::time_point last_log_time;
 
     /// @brief Remember the last requested cut-off voltage (in mV)
     int32_t requested_cutoff_voltage {0};

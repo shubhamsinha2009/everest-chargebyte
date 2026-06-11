@@ -74,6 +74,13 @@ config:
       supports it. If set to false, it will be disabled regardless of hardware.
     type: boolean
     default: true
+  telemetry_log_interval_s:
+    description: >-
+      Interval in seconds between the periodic telemetry summary logs.
+      Set to 0 to disable periodic logging.
+    type: integer
+    default: 5
+    minimum: 0
 provides:
   main:
     interface: power_supply_DC
