@@ -531,6 +531,21 @@ void InfypowerCANController::set_import_mode(bool enable_import) {
 }
 
 void InfypowerCANController::set_enable(bool enable) {
+    this->power_supply_enabled = enable;
+    if (!enable) {
+        // Clear all errors immediately when disabled
+        this->on_error(false, "CommunicationFault", "BCM RX_TIMEOUT", "");
+        this->on_error(false, "VendorError", "Output Short Circuit", "");
+        this->on_error(false, "VendorError", "Discharge Abnormal", "");
+        this->on_error(false, "VendorError", "Fault Alarm", "");
+        this->on_error(false, "VendorError", "Protection Alarm", "");
+        this->on_error(false, "VendorError", "Fan Fault Alarm", "");
+        this->on_error(false, "OverTemperature", "", "");
+        this->on_error(false, "OverVoltageDC", "", "");
+        this->on_error(false, "UnderVoltageAC", "", "");
+        this->on_error(false, "OverVoltageAC", "", "");
+    }
+
     unsigned char new_state = enable ? 0xA0 : 0xA1;
     struct can_frame* can_frame;
     InfypowerCANCmd cmd("Switch On/Off", this->can_id_write_cfg, 0x11, 0x10, this->pm_count);
@@ -714,7 +729,7 @@ void InfypowerCANController::can_bcm_rx_worker() {
             throw std::system_error(EBADMSG, std::generic_category(), "Short CAN BCM read");
 
         switch (bcm_msg_head->opcode) {
-        case RX_CHANGED:
+        case RX_CHANGED: {
             if (bcm_msg_head->nframes != 1)
                 continue; // this should usually not happen
             if (can_frame->len != 8)
@@ -724,7 +739,8 @@ void InfypowerCANController::can_bcm_rx_worker() {
             // but can evaluate the data directly
 
             // since we have received a message, we can clear any error we raised before
-            if (timeout_reported) {
+            bool active = this->power_supply_enabled;
+            if (timeout_reported || !active) {
                 this->on_error(false, "CommunicationFault", "BCM RX_TIMEOUT", "");
                 timeout_reported = false;
             }
@@ -733,29 +749,30 @@ void InfypowerCANController::can_bcm_rx_worker() {
             case 0x11:
                 switch (can_frame->data[1]) {
                 case 0x10:
-                    this->on_error(can_frame->data[7] & (1 << 0), "VendorError", "Output Short Circuit",
+                    this->on_error(active && (can_frame->data[7] & (1 << 0)), "VendorError", "Output Short Circuit",
                                    "Output Short Circuit");
-                    this->on_error(can_frame->data[7] & (1 << 5), "VendorError", "Discharge Abnormal",
+                    this->on_error(active && (can_frame->data[7] & (1 << 5)), "VendorError", "Discharge Abnormal",
                                    "Discharge Abnormal");
 
-                    this->on_error(can_frame->data[6] & (1 << 1), "VendorError", "Fault Alarm", "Fault Alarm");
-                    this->on_error(can_frame->data[6] & (1 << 2), "VendorError", "Protection Alarm",
+                    this->on_error(active && (can_frame->data[6] & (1 << 1)), "VendorError", "Fault Alarm", "Fault Alarm");
+                    this->on_error(active && (can_frame->data[6] & (1 << 2)), "VendorError", "Protection Alarm",
                                    "Protection Alarm");
-                    this->on_error(can_frame->data[6] & (1 << 3), "VendorError", "Fan Fault Alarm", "Fan Fault Alarm");
-                    this->on_error(can_frame->data[6] & (1 << 4), "OverTemperature", "", "OverTemperature");
-                    this->on_error(can_frame->data[6] & (1 << 5), "OverVoltageDC", "", "OverVoltageDC");
+                    this->on_error(active && (can_frame->data[6] & (1 << 3)), "VendorError", "Fan Fault Alarm", "Fan Fault Alarm");
+                    this->on_error(active && (can_frame->data[6] & (1 << 4)), "OverTemperature", "", "OverTemperature");
+                    this->on_error(active && (can_frame->data[6] & (1 << 5)), "OverVoltageDC", "", "OverVoltageDC");
 
-                    this->on_error(can_frame->data[5] & (1 << 5), "UnderVoltageAC", "", "UnderVoltageAC");
-                    this->on_error(can_frame->data[5] & (1 << 6), "OverVoltageAC", "", "OverVoltageAC");
+                    this->on_error(active && (can_frame->data[5] & (1 << 5)), "UnderVoltageAC", "", "UnderVoltageAC");
+                    this->on_error(active && (can_frame->data[5] & (1 << 6)), "OverVoltageAC", "", "OverVoltageAC");
                     break;
                 }
                 break;
             }
 
             break;
+        }
 
         case RX_TIMEOUT:
-            if (!timeout_reported) {
+            if (this->power_supply_enabled && !timeout_reported) {
                 std::string errmsg = InfypowerCANID(bcm_msg_head->can_id);
                 this->on_error(true, "CommunicationFault", "BCM RX_TIMEOUT", errmsg);
                 timeout_reported = true;

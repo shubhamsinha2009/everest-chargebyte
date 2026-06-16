@@ -100,6 +100,9 @@ private:
     /// @brief Remembers whether the power module is currently in import mode
     std::atomic_bool import_mode_enabled {false};
 
+    /// @brief Remembers whether the power module is currently enabled
+    std::atomic_bool power_supply_enabled {false};
+
     /// @brief Remembers the user configured telemetry log interval
     int telemetry_log_interval_s {5};
 
