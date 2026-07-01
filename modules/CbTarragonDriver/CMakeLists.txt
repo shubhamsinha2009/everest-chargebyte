@@ -25,6 +25,7 @@ target_link_libraries(${MODULE_NAME}
     PRIVATE
         tarragon
         utils::cp
+        ${LIBGPIOD_LIBRARIES}
 )
 
 get_property(LINUX_HW_INCLUDE_DIR GLOBAL PROPERTY LINUX_HW_INCLUDE_DIR)
