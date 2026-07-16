@@ -209,6 +209,13 @@ void evse_board_supportImpl::init() {
             EVLOG_info << source << " state change detected: now " << actual_state;
 
             bool current_contactor_state = this->mod->controller.get_contactor_state();
+
+            // Suppress PowerOn if the actual state is Closed but EVerest did not command it.
+            if (current_contactor_state && !this->contactor_state_desired.load()) {
+                EVLOG_warning << source << " reported Closed but desired state is Open. Suppressing PowerOn event.";
+                return;
+            }
+
             bool previous_state_reported = this->contactor_state_reported.exchange(current_contactor_state);
 
             if (previous_state_reported != current_contactor_state) {
@@ -444,6 +451,8 @@ void evse_board_supportImpl::handle_cp_state_E() {
 }
 
 void evse_board_supportImpl::handle_allow_power_on(types::evse_board_support::PowerOnOff& value) {
+    this->contactor_state_desired = value.allow_power_on;
+
     // this method is called very often, even the contactor state is already matching the desired one
     // so let's use this as helper to control the log noise a little bit
     bool state_change = value.allow_power_on != this->mod->controller.get_contactor_state();

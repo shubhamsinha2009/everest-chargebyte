@@ -78,6 +78,9 @@ CbChargeSOM::CbChargeSOM() {
         unsigned int previous_cp_errors = 0;
         bool previous_contactor_error = false;
         enum contactor_state previous_contactor_state[CB_PROTO_MAX_CONTACTORS];
+        for (size_t i = 0; i < CB_PROTO_MAX_CONTACTORS; ++i) {
+            previous_contactor_state[i] = CONTACTOR_STATE_MAX;
+        }
         bool initial_contactor_states_seen = false;
         enum cs1_safestate_reason previous_safestate_reason = CS1_SAFESTATE_REASON_MAX;
         enum cs_safestate_active previous_safestate_active = CS_SAFESTATE_ACTIVE_MAX;

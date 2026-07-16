@@ -92,6 +92,9 @@ private:
     /// @brief Flag to remember which cumulative contactor state we reported last.
     std::atomic_bool contactor_state_reported {false};
 
+    /// @brief Flag to track the desired contactor state requested by EVerest.
+    std::atomic_bool contactor_state_desired {false};
+
     /// @brief Flag to remember whether we already published a contactor fault.
     std::atomic_bool contactor_fault_reported {false};
 
