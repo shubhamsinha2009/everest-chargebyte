@@ -6,6 +6,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <iomanip>
+#include <sstream>
 #include "cb_temperaturesImpl.hpp"
 
 using namespace std::chrono_literals;
@@ -101,6 +103,37 @@ void cb_temperaturesImpl::ready() {
                 }
 
                 v.push_back(t);
+            }
+
+            static std::vector<float> last_logged_temps;
+            bool print_update = false;
+
+            if (last_logged_temps.size() != v.size()) {
+                print_update = true;
+                last_logged_temps.clear();
+                for (const auto& t : v) {
+                    last_logged_temps.push_back(t.temperature);
+                }
+            } else {
+                for (size_t i = 0; i < v.size(); ++i) {
+                    float diff = v[i].temperature - last_logged_temps[i];
+                    if (diff >= 5.0f || diff <= -5.0f) {
+                        print_update = true;
+                        break;
+                    }
+                }
+            }
+
+            if (print_update) {
+                for (size_t i = 0; i < v.size(); ++i) {
+                    last_logged_temps[i] = v[i].temperature;
+                }
+                std::ostringstream oss;
+                oss << "Active Temperatures: ";
+                for (const auto& t : v) {
+                    oss << t.identification.value() << "=" << std::fixed << std::setprecision(1) << t.temperature << " °C; ";
+                }
+                EVLOG_info << oss.str();
             }
 
             this->publish_temperatures(v);
