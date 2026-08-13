@@ -1,9 +1,5 @@
 description: Hardware abstraction layer for chargebyte's Charge Control Y
 config:
-  uart_max_retries:
-    description: The maximum number of consecutive UART timeouts before raising a fatal safety error.
-    type: integer
-    default: 3
   serial_port:
     description: >-
       Device name of the serial port to use for communication with the
