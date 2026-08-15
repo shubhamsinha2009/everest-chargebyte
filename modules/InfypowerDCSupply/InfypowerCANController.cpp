@@ -333,20 +333,20 @@ void InfypowerCANController::setup_can_bcm() {
         if (std::chrono::duration_cast<std::chrono::seconds>(now - this->last_log_time).count() >=
             this->telemetry_log_interval_s) {
             this->last_log_time = now;
-            EVLOG_debug << "--------------------------------------------------";
-            EVLOG_debug << " [Infy Full Telemetry Summary]";
-            EVLOG_debug << " > DC Output: " << std::fixed << std::setprecision(1)
+            EVLOG_info << "--------------------------------------------------";
+            EVLOG_info << " [Infy Full Telemetry Summary]";
+            EVLOG_info << " > DC Output: " << std::fixed << std::setprecision(1)
                        << (static_cast<float>(this->received_voltage) / 1000.0f) << "V | "
                        << (static_cast<float>(this->received_current) / 1000.0f) << "A";
-            EVLOG_debug << " > Phase V:   L1:" << this->ac_v_l1 << "V | L2:" << this->ac_v_l2 << "V | L3:" << this->ac_v_l3
+            EVLOG_info << " > Phase V:   L1:" << this->ac_v_l1 << "V | L2:" << this->ac_v_l2 << "V | L3:" << this->ac_v_l3
                        << "V";
-            EVLOG_debug << " > Phase I:   L1:" << this->ac_i_l1 << "A | L2:" << this->ac_i_l2 << "A | L3:" << this->ac_i_l3
+            EVLOG_info << " > Phase I:   L1:" << this->ac_i_l1 << "A | L2:" << this->ac_i_l2 << "A | L3:" << this->ac_i_l3
                        << "A";
-            EVLOG_debug << " > Line V:    AB:" << this->ac_v_ab << "V | BC:" << this->ac_v_bc << "V | CA:" << this->ac_v_ca
+            EVLOG_info << " > Line V:    AB:" << this->ac_v_ab << "V | BC:" << this->ac_v_bc << "V | CA:" << this->ac_v_ca
                        << "V";
-            EVLOG_debug << " > Power:     Active: " << (int)this->ac_active_pwr << "W | Reactive: " << (int)this->ac_reactive_pwr << "VAR | Apparent: " << (int)this->ac_apparent_pwr << "VA";
-            EVLOG_debug << " > Grid:      " << this->ac_freq << "Hz | Modules: " << this->pm_count << " | Temp: " << this->ambient_temp << "C";
-            EVLOG_debug << "--------------------------------------------------";
+            EVLOG_info << " > Power:     Active: " << (int)this->ac_active_pwr << "W | Reactive: " << (int)this->ac_reactive_pwr << "VAR | Apparent: " << (int)this->ac_apparent_pwr << "VA";
+            EVLOG_info << " > Grid:      " << this->ac_freq << "Hz | Modules: " << this->pm_count << " | Temp: " << this->ambient_temp << "C";
+            EVLOG_info << "--------------------------------------------------";
         }
     });
     const InfypowerCANCmd& cmd = *this->can_bcm_cmds[0];
