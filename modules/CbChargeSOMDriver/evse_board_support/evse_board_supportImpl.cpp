@@ -219,6 +219,12 @@ void evse_board_supportImpl::init() {
                 types::board_support_common::BspEvent tmp {tmp_event};
                 this->publish_event(tmp);
             }
+
+            if (this->contactor_fault_reported.load()) {
+                EVLOG_info << "Contactor state recovered, clearing MREC17EVSEContactorFault.";
+                this->clear_error("evse_board_support/MREC17EVSEContactorFault");
+                this->contactor_fault_reported = false;
+            }
         });
 
     this->mod->controller.on_contactor_error.connect(
@@ -245,9 +251,21 @@ void evse_board_supportImpl::init() {
     this->mod->controller.on_estop.connect([&](const enum cs1_safestate_reason& reason) {
         if (reason == CS1_SAFESTATE_REASON_NO_STOP) {
             EVLOG_info << "Emergency Stop Cause disappeared";
-            if (this->last_reported_fault.sub_type != safestate_active_error_subtype) {
-                this->clear_error(this->last_reported_fault.type, this->last_reported_fault.sub_type);
-                this->generic_fault_reported = false;
+            this->clear_error("evse_board_support/MREC8EmergencyStop");
+            this->clear_error("evse_board_support/VendorError");
+            this->generic_fault_reported = false;
+
+            if (this->cp_recovery_pending.exchange(false)) {
+                std::scoped_lock lock(this->cp_mutex);
+                EVLOG_info << "on_estop: Applying deferred CP recovery after emergency released";
+                this->mod->controller.disable();
+                this->cp_current_state = types::cb_board_support::CPState::PowerOn;
+                this->mod->controller.enable();
+                try {
+                    this->mod->controller.set_duty_cycle(this->cached_duty_cycle_x10);
+                } catch (const std::exception& e) {
+                    EVLOG_error << "Deferred CP recovery failed: " << e.what();
+                }
             }
         } else {
             std::string error_subtype = cb_proto_safestate_reason_to_str(reason);
@@ -288,9 +306,21 @@ void evse_board_supportImpl::init() {
         switch (state) {
         case cs_safestate_active::CS_SAFESTATE_ACTIVE_NORMAL:
             EVLOG_info << "Safety Controller back in normal mode";
-            if (this->generic_fault_reported and
-                (this->last_reported_fault.sub_type == safestate_active_error_subtype)) {
-                this->clear_error(this->last_reported_fault.type, this->last_reported_fault.sub_type);
+            this->clear_error("evse_board_support/VendorError");
+            this->clear_error("evse_board_support/MREC8EmergencyStop");
+            this->generic_fault_reported = false;
+
+            if (this->cp_recovery_pending.exchange(false)) {
+                std::scoped_lock lock(this->cp_mutex);
+                EVLOG_info << "on_safestate_active: Applying deferred CP recovery in normal mode";
+                this->mod->controller.disable();
+                this->cp_current_state = types::cb_board_support::CPState::PowerOn;
+                this->mod->controller.enable();
+                try {
+                    this->mod->controller.set_duty_cycle(this->cached_duty_cycle_x10);
+                } catch (const std::exception& e) {
+                    EVLOG_error << "Deferred CP recovery failed: " << e.what();
+                }
             }
             break;
         case cs_safestate_active::CS_SAFESTATE_ACTIVE_SAFESTATE:
@@ -383,21 +413,14 @@ void evse_board_supportImpl::handle_cp_state_X1() {
         return;
     }
 
-    // in case safety controller was in emergency state, we have to reset it
-    // with a disable -> enable toggle
+    // in case safety controller is still in emergency / safe state, defer recovery
+    // so we don't attempt duty cycle change that the MCU will reject
     if (this->mod->controller.is_emergency()) {
         std::scoped_lock lock(this->cp_mutex);
-
-        EVLOG_info << "handle_cp_state_X1: recovering after safe state";
-
-        // disable resets the controller and goes shortly to state E
-        this->mod->controller.disable();
-
-        // reset the remembered state
-        this->cp_current_state = types::cb_board_support::CPState::PowerOn;
-
-        // enable starts UART frame processing again
-        this->mod->controller.enable();
+        EVLOG_info << "handle_cp_state_X1: emergency/safe-state active — deferring CP State A recovery";
+        this->cached_duty_cycle_x10 = 1000;
+        this->cp_recovery_pending = true;
+        return;
     }
 
     try {
