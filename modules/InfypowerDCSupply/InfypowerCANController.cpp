@@ -553,8 +553,14 @@ void InfypowerCANController::set_enable(bool enable) {
     can_frame = cmd.get_tx_frame();
     can_frame->data[7] = new_state;
 
-    if (this->process_cmd(cmd))
+    if (this->process_cmd(cmd)) {
+        if (!enable) {
+            EVLOG_warning << "Could not send Switch Off command over CAN (bus offline or modules unresponsive). "
+                          << "Hardware watchdog will ensure DC de-energization.";
+            return;
+        }
         this->raise_incomplete_feedback(cmd);
+    }
 
     for (unsigned int idx = 0; idx < this->pm_count; ++idx) {
         can_frame = cmd.get_rx_frame(idx);
@@ -711,7 +717,6 @@ void InfypowerCANController::can_bcm_rx_worker() {
     char bcm_frame[sizeof(struct bcm_msg_head) + sizeof(struct can_frame)];
     struct bcm_msg_head* bcm_msg_head = (struct bcm_msg_head*)bcm_frame;
     struct can_frame* can_frame = bcm_msg_head->frames;
-    bool timeout_reported {false};
 
     EVLOG_debug << "CAN BCM Rx Thread started";
 
@@ -738,12 +743,8 @@ void InfypowerCANController::can_bcm_rx_worker() {
             // since we only registered RX for a single CAN ID we trust BCM and do not check this further,
             // but can evaluate the data directly
 
-            // since we have received a message, we can clear any error we raised before
             bool active = this->power_supply_enabled;
-            if (timeout_reported || !active) {
-                this->on_error(false, "CommunicationFault", "BCM RX_TIMEOUT", "");
-                timeout_reported = false;
-            }
+            this->notify_can_frame_received();
 
             switch (can_frame->data[0]) {
             case 0x11:
@@ -772,10 +773,11 @@ void InfypowerCANController::can_bcm_rx_worker() {
         }
 
         case RX_TIMEOUT:
-            if (this->power_supply_enabled && !timeout_reported) {
+            this->valid_frame_consecutive_count = 0;
+            if (this->power_supply_enabled && !this->comm_fault_active.exchange(true)) {
                 std::string errmsg = InfypowerCANID(bcm_msg_head->can_id);
+                EVLOG_error << "Infypower CAN communication timeout: " << errmsg;
                 this->on_error(true, "CommunicationFault", "BCM RX_TIMEOUT", errmsg);
-                timeout_reported = true;
             }
             break;
 
@@ -914,6 +916,7 @@ void InfypowerCANController::can_raw_rx_worker() {
                                });
 
         if (it != this->expected_cmds.end()) {
+            this->notify_can_frame_received();
             if (it->get().store_feedback(can_id.get_src_addr(), &raw_frame)) {
                 EVLOG_debug << "Stored feedback CAN frame for " << it->get();
 
@@ -945,4 +948,17 @@ void InfypowerCANController::unregister_expected_cmd(InfypowerCANCmd& cmd) {
 
     if (it != this->expected_cmds.end())
         this->expected_cmds.erase(it);
+}
+
+void InfypowerCANController::notify_can_frame_received() {
+    uint32_t count = ++this->valid_frame_consecutive_count;
+    if (this->comm_fault_active.load() && count >= 3) {
+        if (this->comm_fault_active.exchange(false)) {
+            EVLOG_info << "Infypower CAN communication restored (received " << count
+                       << " consecutive valid frames). Clearing CommunicationFault and VendorError.";
+            this->on_error(false, "CommunicationFault", "BCM RX_TIMEOUT", "");
+            this->on_error(false, "CommunicationFault", "", "");
+            this->on_error(false, "VendorError", "", "");
+        }
+    }
 }

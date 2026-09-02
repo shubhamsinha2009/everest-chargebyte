@@ -38,10 +38,14 @@ void power_supply_DCImpl::ready() {
     // register error handler
     this->mod->controller.on_error.connect(
         [this](bool error_present, const std::string& type, const std::string& sub_type, const std::string& errmsg) {
-            if (error_present)
+            if (error_present) {
                 this->raise_error("power_supply_DC/" + type, sub_type, errmsg);
-            else
+            } else {
                 this->clear_error("power_supply_DC/" + type, sub_type);
+                if (type == "CommunicationFault") {
+                    this->clear_error("power_supply_DC/VendorError");
+                }
+            }
         });
 
     // use a working copy
@@ -125,7 +129,11 @@ void power_supply_DCImpl::handle_setMode(types::power_supply_DC::Mode& mode,
             this->mod->controller.set_enable(true);
             break;
         default:
-            this->mod->controller.set_enable(false);
+            try {
+                this->mod->controller.set_enable(false);
+            } catch (const std::exception& e) {
+                EVLOG_warning << "set_enable(false) exception ignored during shutdown: " << e.what();
+            }
         }
 
         // finally report the current mode

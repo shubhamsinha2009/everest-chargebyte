@@ -106,6 +106,15 @@ private:
     /// @brief Remembers the user configured telemetry log interval
     int telemetry_log_interval_s {5};
 
+    /// @brief Remembers whether communication fault is currently active
+    std::atomic_bool comm_fault_active {false};
+
+    /// @brief Tracks consecutive valid frames received to debounce recovery
+    std::atomic<uint32_t> valid_frame_consecutive_count {0};
+
+    /// @brief Called whenever a valid CAN frame is received from rectifiers to handle auto-recovery
+    void notify_can_frame_received();
+
     /// @brief Helper to signal thread termination wish
     std::atomic_bool termination_requested {false};
 
