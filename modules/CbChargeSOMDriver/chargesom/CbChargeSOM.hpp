@@ -107,6 +107,12 @@ public:
     /// @brief Return whether the safety controller detected an emergency state.
     bool is_emergency();
 
+    /// @brief Return whether any physical emergency input is actively tripped.
+    bool is_estop_physically_tripped();
+
+    /// @brief Return whether all contactors are open and report no error.
+    bool are_contactors_open_and_safe();
+
     /// @brief Set a new duty cycle.
     /// @param duty_cycle The desired duty cycle in percent [0.1 %].
     void set_duty_cycle(unsigned int duty_cycle);

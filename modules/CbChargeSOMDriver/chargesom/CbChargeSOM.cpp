@@ -682,6 +682,29 @@ bool CbChargeSOM::is_emergency() {
     return pp_error or cb_proto_get_safe_state_active(&this->ctx) == CS_SAFESTATE_ACTIVE_SAFESTATE;
 }
 
+bool CbChargeSOM::is_estop_physically_tripped() {
+    size_t n = static_cast<std::size_t>(cb_uart_com::COM_CHARGE_STATE);
+    std::scoped_lock lock(this->ctx_mutexes[n]);
+    return cb_proto_estop_has_any_tripped(&this->ctx);
+}
+
+bool CbChargeSOM::are_contactors_open_and_safe() {
+    size_t n = static_cast<std::size_t>(cb_uart_com::COM_CHARGE_STATE);
+    std::scoped_lock lock(this->ctx_mutexes[n]);
+
+    if (cb_proto_get_safestate_reason(&this->ctx) == CS1_SAFESTATE_REASON_HV_SWITCH_MALFUNCTION) {
+        return false;
+    }
+
+    for (unsigned int i = 0; i < CB_PROTO_MAX_CONTACTORS; ++i) {
+        if (cb_proto_contactorN_is_enabled(&this->ctx, i) &&
+            cb_proto_contactorN_is_closed(&this->ctx, i)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void CbChargeSOM::set_duty_cycle(unsigned int duty_cycle) {
     // we need to take the lock to change the field
     size_t n = static_cast<std::size_t>(cb_uart_com::COM_CHARGE_CONTROL);

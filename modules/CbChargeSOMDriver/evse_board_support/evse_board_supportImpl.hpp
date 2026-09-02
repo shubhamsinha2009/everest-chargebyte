@@ -103,6 +103,12 @@ private:
 
     /// @brief Tracks whether a CP State A recovery was deferred due to active emergency/safe-state.
     std::atomic_bool cp_recovery_pending {false};
+
+    /// @brief Tracks whether the recovery watchdog thread is currently running.
+    std::atomic_bool recovery_watchdog_active {false};
+
+    /// @brief Launches the non-blocking background watchdog that waits for physical E-stop release.
+    void start_emergency_recovery_watchdog();
     // ev@3370e4dd-95f4-47a9-aaec-ea76f34a66c9:v1
 };
 

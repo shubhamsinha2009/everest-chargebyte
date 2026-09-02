@@ -420,6 +420,7 @@ void evse_board_supportImpl::handle_cp_state_X1() {
         EVLOG_info << "handle_cp_state_X1: emergency/safe-state active — deferring CP State A recovery";
         this->cached_duty_cycle_x10 = 1000;
         this->cp_recovery_pending = true;
+        this->start_emergency_recovery_watchdog();
         return;
     }
 
@@ -519,6 +520,94 @@ void evse_board_supportImpl::handle_ac_switch_three_phases_while_charging(bool& 
 void evse_board_supportImpl::handle_ac_set_overcurrent_limit_A(double& value) {
     // your code for cmd ac_set_overcurrent_limit_A goes here
     (void)value;
+}
+
+void evse_board_supportImpl::start_emergency_recovery_watchdog() {
+    if (this->recovery_watchdog_active.exchange(true)) {
+        return; // Watchdog already active
+    }
+
+    std::thread([this]() {
+        EVLOG_info << "Emergency Recovery Watchdog: started passive monitoring for E-stop release.";
+
+        constexpr auto POLL_INTERVAL = std::chrono::milliseconds(250);
+        constexpr auto REQUIRED_RELEASE_DURATION = std::chrono::milliseconds(1500);
+
+        auto released_start = std::chrono::steady_clock::time_point::min();
+        bool is_timing_release = false;
+
+        while (this->cp_recovery_pending.load()) {
+            std::this_thread::sleep_for(POLL_INTERVAL);
+
+            // Passive check from continuous 100ms UART telemetry frame:
+            // Has the physical E-Stop contact opened (released)?
+            bool estop_tripped = this->mod->controller.is_estop_physically_tripped();
+
+            if (estop_tripped) {
+                // Button is still held down (or was re-pressed). Reset debounce timer.
+                is_timing_release = false;
+                continue;
+            }
+
+            // Button is physically released
+            auto now = std::chrono::steady_clock::now();
+            if (!is_timing_release) {
+                released_start = now;
+                is_timing_release = true;
+                EVLOG_info << "Emergency Recovery Watchdog: E-stop button physically released, debouncing...";
+                continue;
+            }
+
+            // Check if debounce duration elapsed
+            if (now - released_start >= REQUIRED_RELEASE_DURATION) {
+                EVLOG_info << "Emergency Recovery Watchdog: E-stop release confirmed (stable > 1.5s). Checking safety interlocks...";
+
+                // Safety Gate: Verify contactors are open and report no faults
+                if (!this->mod->controller.are_contactors_open_and_safe()) {
+                    EVLOG_critical << "Emergency Recovery Watchdog: Unlatch aborted! Contactors are closed or in error state.";
+                    is_timing_release = false;
+                    continue;
+                }
+
+                // Execute single synchronized unlatch cycle under cp_mutex
+                try {
+                    std::scoped_lock lock(this->cp_mutex);
+                    EVLOG_info << "Emergency Recovery Watchdog: Executing single controller unlatch reset cycle...";
+                    this->mod->controller.disable();
+                    this->cp_current_state = types::cb_board_support::CPState::PowerOn;
+                    this->mod->controller.enable();
+
+                    // Check if controller returned to normal mode
+                    if (!this->mod->controller.is_emergency()) {
+                        EVLOG_info << "Emergency Recovery Watchdog: Safety Controller successfully back in normal mode!";
+                        this->clear_error("evse_board_support/MREC8EmergencyStop");
+                        this->clear_error("evse_board_support/VendorError");
+                        this->generic_fault_reported = false;
+                        this->cp_recovery_pending = false;
+
+                        // Restore CP State A (cached duty cycle / 100%)
+                        try {
+                            this->mod->controller.set_duty_cycle(this->cached_duty_cycle_x10);
+                            EVLOG_info << "Emergency Recovery Watchdog: Successfully restored CP State A ("
+                                       << std::fixed << std::setprecision(1) << (this->cached_duty_cycle_x10 / 10.0) << "%).";
+                        } catch (const std::exception& e) {
+                            EVLOG_warning << "Failed to set duty cycle during recovery: " << e.what();
+                        }
+                        break;
+                    } else {
+                        EVLOG_warning << "Emergency Recovery Watchdog: Controller still reports emergency after reset, retrying...";
+                        is_timing_release = false;
+                    }
+                } catch (const std::exception& e) {
+                    EVLOG_error << "Emergency Recovery Watchdog: Exception during unlatch reset: " << e.what();
+                    is_timing_release = false;
+                }
+            }
+        }
+
+        this->recovery_watchdog_active = false;
+        EVLOG_info << "Emergency Recovery Watchdog: thread completed and exited.";
+    }).detach();
 }
 
 } // namespace evse_board_support
