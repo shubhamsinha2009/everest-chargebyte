@@ -21,11 +21,19 @@
 #include <gpiodUtils.hpp>
 // B0 is defined in terminios.h for UART baudrate, but in CEState for MCS too - so undefine it before the inclusion
 #undef B0
+#include <array>
+#include <string_view>
 #include <generated/types/cb_board_support.hpp>
 #include "CbChargeSOM.hpp"
 #include <everest/logging.hpp>
 
 using namespace std::chrono_literals;
+
+static constexpr std::array<std::string_view, CB_PROTO_MAX_CONTACTORS> CONTACTOR_ROLES = {
+    "Contactor 1 (DC+)",
+    "Contactor 2 (DC-)",
+    "Contactor 3 (Precharge)"
+};
 
 std::ostream& operator<<(std::ostream& os, enum cp_state state) {
     return os << cb_proto_cp_state_to_str(state);
@@ -94,7 +102,6 @@ CbChargeSOM::CbChargeSOM() {
             enum contactor_state current_contactor_state[CB_PROTO_MAX_CONTACTORS];
             enum cs1_safestate_reason current_safestate_reason;
             enum cs_safestate_active current_safestate_active;
-            unsigned int i;
 
             // wait for changes
             std::unique_lock<std::mutex> lock(this->notify_mutex);
@@ -129,34 +136,65 @@ CbChargeSOM::CbChargeSOM() {
             current_contactor_error =
                 cb_proto_get_safestate_reason(&tmpctx) == CS1_SAFESTATE_REASON_HV_SWITCH_MALFUNCTION;
             if (current_contactor_error != previous_contactor_error) {
-                std::string name = "Contactor";
+                if (current_contactor_error) {
+                    bool discrepancy_found = false;
 
-                EVLOG_debug << "on_contactor_error()";
-                // FIXME: for now, we only look at the first contactor since we assume a DC use-case
-                this->on_contactor_error(name, cb_proto_contactorN_get_target_state(&this->ctx, 0),
-                                         cb_proto_contactorN_is_closed(&tmpctx, 0)
-                                             ? types::cb_board_support::ContactorState::Closed
-                                             : types::cb_board_support::ContactorState::Open);
+                    for (std::size_t c = 0; c < CB_PROTO_MAX_CONTACTORS; ++c) {
+                        if (cb_proto_contactorN_is_enabled(&this->ctx, c)) {
+                            bool target = cb_proto_contactorN_get_target_state(&this->ctx, c);
+                            bool actual = cb_proto_contactorN_is_closed(&tmpctx, c);
+
+                            if (target != actual) {
+                                discrepancy_found = true;
+                                std::string name(c < CONTACTOR_ROLES.size() ? CONTACTOR_ROLES[c]
+                                                                            : "Contactor " + std::to_string(c + 1));
+                                EVLOG_error << "Contactor discrepancy on " << name
+                                            << " (target=" << (target ? "CLOSED" : "OPEN")
+                                            << ", actual=" << (actual ? "CLOSED" : "OPEN") << ")";
+                                this->on_contactor_error(name, target,
+                                                         actual ? types::cb_board_support::ContactorState::Closed
+                                                                : types::cb_board_support::ContactorState::Open);
+                            }
+                        }
+                    }
+
+                    // Fallback: If safety controller flagged HV_SWITCH_MALFUNCTION but no specific contactor
+                    // showed mismatch, report error on all enabled contactors so the fault is never dropped.
+                    if (!discrepancy_found) {
+                        for (std::size_t c = 0; c < CB_PROTO_MAX_CONTACTORS; ++c) {
+                            if (cb_proto_contactorN_is_enabled(&this->ctx, c)) {
+                                std::string name(c < CONTACTOR_ROLES.size() ? CONTACTOR_ROLES[c]
+                                                                            : "Contactor " + std::to_string(c + 1));
+                                this->on_contactor_error(name, cb_proto_contactorN_get_target_state(&this->ctx, c),
+                                                         cb_proto_contactorN_is_closed(&tmpctx, c)
+                                                             ? types::cb_board_support::ContactorState::Closed
+                                                             : types::cb_board_support::ContactorState::Open);
+                            }
+                        }
+                    }
+                }
                 previous_contactor_error = current_contactor_error;
             }
 
             // notify on contactor state changes
-            for (i = 0; i < CB_PROTO_MAX_CONTACTORS; ++i) {
-                current_contactor_state[i] = cb_proto_contactorN_get_actual_state(&tmpctx, i);
+            for (std::size_t c = 0; c < CB_PROTO_MAX_CONTACTORS; ++c) {
+                current_contactor_state[c] = cb_proto_contactorN_get_actual_state(&tmpctx, c);
 
-                if (current_contactor_state[i] != previous_contactor_state[i]) {
-                    std::string name = "Contactor " + std::to_string(i + 1);
+                if (current_contactor_state[c] != previous_contactor_state[c]) {
+                    std::string name(c < CONTACTOR_ROLES.size() ? CONTACTOR_ROLES[c]
+                                                                : "Contactor " + std::to_string(c + 1));
 
                     // we suppress the initial change during boot
                     if (initial_contactor_states_seen) {
-                        EVLOG_debug << "on_contactor_change(" << i << ", " << current_contactor_state[i] << ")";
-                        this->on_contactor_change(name, contactor_state_to_ContactorState(current_contactor_state[i]));
+                        EVLOG_debug << "on_contactor_change(" << c << " [" << name << "], "
+                                    << current_contactor_state[c] << ")";
+                        this->on_contactor_change(name, contactor_state_to_ContactorState(current_contactor_state[c]));
                     } else {
-                        EVLOG_debug << "on_contactor_change(" << i << ", " << current_contactor_state[i] << ")"
-                                    << " [suppressed]";
+                        EVLOG_debug << "on_contactor_change(" << c << " [" << name << "], "
+                                    << current_contactor_state[c] << ") [suppressed]";
                     }
 
-                    previous_contactor_state[i] = current_contactor_state[i];
+                    previous_contactor_state[c] = current_contactor_state[c];
                 }
             }
             initial_contactor_states_seen = true;
@@ -778,28 +816,35 @@ bool CbChargeSOM::switch_state(bool on) {
 }
 
 bool CbChargeSOM::get_contactor_state_no_lock() {
-    unsigned int i;
     bool at_least_one_is_configured = false;
+    bool any_commanded_closed = false;
+    bool all_commanded_are_closed = true;
     bool target_state = false;
-    bool actual_state = false;
 
-    for (i = 0; i < CB_PROTO_MAX_CONTACTORS; ++i) {
-        if (cb_proto_contactorN_is_enabled(&this->ctx, i)) {
-            at_least_one_is_configured = true;
-
-            // don't overwrite, but merge the state
-            actual_state |= cb_proto_contactorN_is_closed(&this->ctx, i);
+    for (std::size_t c = 0; c < CB_PROTO_MAX_CONTACTORS; ++c) {
+        if (!cb_proto_contactorN_is_enabled(&this->ctx, c)) {
+            continue;
         }
 
-        // fallback in the same loop in case no contactor is actually in use
-        // don't overwrite, but merge the state
-        target_state |= cb_proto_contactorN_get_target_state(&this->ctx, i);
+        at_least_one_is_configured = true;
+        bool target = cb_proto_contactorN_get_target_state(&this->ctx, c);
+        target_state |= target;
+
+        if (target) {
+            any_commanded_closed = true;
+            if (!cb_proto_contactorN_is_closed(&this->ctx, c)) {
+                all_commanded_are_closed = false;
+                // Early break: if any contactor commanded closed drops open or loses feedback, circuit is open
+                break;
+            }
+        }
     }
 
-    if (at_least_one_is_configured)
-        return actual_state;
-    else
+    if (at_least_one_is_configured) {
+        return any_commanded_closed && all_commanded_are_closed;
+    } else {
         return target_state;
+    }
 }
 
 bool CbChargeSOM::get_contactor_state() {
