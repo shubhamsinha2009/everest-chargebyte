@@ -572,10 +572,14 @@ void evse_board_supportImpl::start_emergency_recovery_watchdog() {
                 // Execute single synchronized unlatch cycle under cp_mutex
                 try {
                     std::scoped_lock lock(this->cp_mutex);
-                    EVLOG_info << "Emergency Recovery Watchdog: Executing single controller unlatch reset cycle...";
+                    EVLOG_info << "Emergency Recovery Watchdog: Executing hardware controller reset unlatch cycle...";
+                    this->mod->controller.reset();
                     this->mod->controller.disable();
                     this->cp_current_state = types::cb_board_support::CPState::PowerOn;
                     this->mod->controller.enable();
+
+                    // Wait for fresh UART telemetry frame from restarted MCU
+                    std::this_thread::sleep_for(std::chrono::milliseconds(250));
 
                     // Check if controller returned to normal mode
                     if (!this->mod->controller.is_emergency()) {
